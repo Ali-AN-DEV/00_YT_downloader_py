@@ -34,12 +34,12 @@
       Or go to: https://ffmpeg.org/ 
    
 
-   #### Common Problem solutions
+   #### Problemas Comunes
 
-   Try: 
+   Prueba a dentro de la terminal de tu IDE 
+
     ```bash 
     pip install python-ffmpeg
     ```
-
-    Si VSCode no reproduce sonido en los .mp4, usa VLC Media Player https://www.videolan.org/vlc/index.es.html 
+    Si el IDE no reproduce sonido en los .mp4, usa VLC Media Player https://www.videolan.org/vlc/index.es.html 
  
