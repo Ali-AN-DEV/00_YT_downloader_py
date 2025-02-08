@@ -31,15 +31,15 @@
    choco install ffmpeg
    ```
 
-      Or go to: https://ffmpeg.org/ 
+    O simplemente ve a : https://ffmpeg.org/ 
    
 
-   #### Problemas Comunes
+## Problemas Comunes
 
-   Prueba a dentro de la terminal de tu IDE 
+Prueba a dentro de la terminal de tu IDE 
 
-    ```bash 
-    pip install python-ffmpeg
-    ```
-    Si el IDE no reproduce sonido en los .mp4, usa VLC Media Player https://www.videolan.org/vlc/index.es.html 
+ ```bash 
+   pip install python-ffmpeg
+ ```
+Si el IDE no reproduce sonido en los .mp4, usa VLC Media Player https://www.videolan.org/vlc/index.es.html 
  
