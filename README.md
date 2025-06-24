@@ -1,4 +1,4 @@
-# Descargador de YouTube (Video + MP3)
+# Descargar multimedia de YouTube (Video + MP3)
 
 > Scripts en Python para descargar videos de YouTube con audio integrado o extraer solo el audio en MP3.
 
