@@ -1,0 +1,480 @@
+import os
+import re
+import time
+import requests
+from urllib.parse import quote
+from yt_dlp import YoutubeDL
+
+# Librerías para metadatos (instalar con: pip install mutagen musicbrainzngs Pillow)
+try:
+    import musicbrainzngs
+    from mutagen.mp3 import MP3
+    from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC, TCON, APIC
+    from PIL import Image
+    import io
+    METADATA_AVAILABLE = True
+except ImportError:
+    METADATA_AVAILABLE = False
+    print("⚠️  Para metadatos automáticos, instala: pip install mutagen musicbrainzngs Pillow")
+
+def setup_musicbrainz():
+    """Configura MusicBrainz API."""
+    if METADATA_AVAILABLE:
+        musicbrainzngs.set_useragent("YouTubeDownloader", "1.0", "tu-email@ejemplo.com")
+
+def get_default_music_dir():
+    """Devuelve la ruta del directorio de Música predeterminado del sistema."""
+    home_dir = os.path.expanduser("~")
+    return os.path.join(home_dir, "Music")
+
+def sanitize_filename(filename):
+    """Limpia el nombre del archivo eliminando caracteres no válidos."""
+    filename = re.sub(r'[<>:"/\\|?*]', '', filename)
+    filename = filename.strip()
+    filename = re.sub(r'\s+', ' ', filename)
+    return filename
+
+def extract_artist_from_title(title):
+    """Extrae el nombre del artista del título del video."""
+    patterns = [
+        r'^([^-]+)\s*-\s*(.+)$',
+        r'^([^–]+)\s*–\s*(.+)$',
+        r'^([^|]+)\s*\|\s*(.+)$',
+        r'^([^•]+)\s*•\s*(.+)$',
+    ]
+    
+    for pattern in patterns:
+        match = re.match(pattern, title)
+        if match:
+            artist = match.group(1).strip()
+            song = match.group(2).strip()
+            return sanitize_filename(artist), sanitize_filename(song)
+    
+    return "Artista Desconocido", sanitize_filename(title)
+
+def search_musicbrainz(artist, title):
+    """Busca metadatos en MusicBrainz."""
+    if not METADATA_AVAILABLE:
+        return None
+    
+    try:
+        # Buscar grabación (recording)
+        query = f'recording:"{title}" AND artist:"{artist}"'
+        result = musicbrainzngs.search_recordings(query=query, limit=1)
+        
+        if result['recording-list']:
+            recording = result['recording-list'][0]
+            
+            # Obtener información adicional de la release
+            if 'release-list' in recording and recording['release-list']:
+                release = recording['release-list'][0]
+                
+                metadata = {
+                    'title': recording.get('title', title),
+                    'artist': artist,
+                    'album': release.get('title', ''),
+                    'date': release.get('date', ''),
+                    'year': release.get('date', '')[:4] if release.get('date') else '',
+                    'mbid': recording.get('id', '')
+                }
+                
+                # Buscar artwork
+                if 'id' in release:
+                    try:
+                        artwork_url = f"https://coverartarchive.org/release/{release['id']}/front-250"
+                        artwork_response = requests.get(artwork_url, timeout=10)
+                        if artwork_response.status_code == 200:
+                            metadata['artwork'] = artwork_response.content
+                    except:
+                        pass
+                
+                return metadata
+    except Exception as e:
+        print(f"⚠️  Error buscando en MusicBrainz: {e}")
+    
+    return None
+
+def add_metadata_to_mp3(file_path, metadata_info):
+    """Añade metadatos al archivo MP3."""
+    if not METADATA_AVAILABLE:
+        return False
+    
+    try:
+        # Cargar el archivo MP3
+        audio_file = MP3(file_path, ID3=ID3)
+        
+        # Si no tiene tags ID3, crear
+        if audio_file.tags is None:
+            audio_file.add_tags()
+        
+        # Limpiar tags existentes
+        audio_file.tags.clear()
+        
+        # Añadir metadatos básicos
+        if metadata_info.get('title'):
+            audio_file.tags.add(TIT2(encoding=3, text=metadata_info['title']))
+        
+        if metadata_info.get('artist'):
+            audio_file.tags.add(TPE1(encoding=3, text=metadata_info['artist']))
+        
+        if metadata_info.get('album'):
+            audio_file.tags.add(TALB(encoding=3, text=metadata_info['album']))
+        
+        if metadata_info.get('year'):
+            audio_file.tags.add(TDRC(encoding=3, text=metadata_info['year']))
+        
+        # Género por defecto basado en el análisis del título
+        genre = guess_genre(metadata_info.get('title', ''), metadata_info.get('artist', ''))
+        if genre:
+            audio_file.tags.add(TCON(encoding=3, text=genre))
+        
+        # Añadir artwork si está disponible
+        if metadata_info.get('artwork'):
+            try:
+                # Verificar y redimensionar imagen si es necesario
+                img = Image.open(io.BytesIO(metadata_info['artwork']))
+                if img.size[0] > 500 or img.size[1] > 500:
+                    img.thumbnail((500, 500), Image.Resampling.LANCZOS)
+                    
+                # Convertir de vuelta a bytes
+                img_bytes = io.BytesIO()
+                img.save(img_bytes, format='JPEG', quality=85)
+                artwork_data = img_bytes.getvalue()
+                
+                audio_file.tags.add(APIC(
+                    encoding=3,
+                    mime='image/jpeg',
+                    type=3,  # Cover (front)
+                    desc='Cover',
+                    data=artwork_data
+                ))
+            except Exception as e:
+                print(f"⚠️  Error añadiendo artwork: {e}")
+        
+        # Guardar cambios
+        audio_file.save()
+        return True
+        
+    except Exception as e:
+        print(f"⚠️  Error añadiendo metadatos a {file_path}: {e}")
+        return False
+
+def guess_genre(title, artist):
+    """Intenta adivinar el género basado en palabras clave."""
+    title_lower = title.lower()
+    artist_lower = artist.lower()
+    
+    # Diccionario de palabras clave por género
+    genre_keywords = {
+        'Rock': ['rock', 'metal', 'punk', 'grunge'],
+        'Pop': ['pop', 'mainstream', 'chart'],
+        'Hip Hop': ['rap', 'hip hop', 'trap', 'freestyle'],
+        'Electronic': ['electronic', 'edm', 'techno', 'house', 'dubstep'],
+        'Reggaeton': ['reggaeton', 'perreo', 'dembow'],
+        'Latin': ['latino', 'salsa', 'bachata', 'merengue'],
+        'Jazz': ['jazz', 'blues', 'swing'],
+        'Classical': ['classical', 'symphony', 'orchestra'],
+        'Country': ['country', 'folk', 'bluegrass'],
+        'R&B': ['r&b', 'soul', 'rnb']
+    }
+    
+    text_to_check = f"{title_lower} {artist_lower}"
+    
+    for genre, keywords in genre_keywords.items():
+        if any(keyword in text_to_check for keyword in keywords):
+            return genre
+    
+    return "Other"
+
+def download_with_metadata(url, organize_by_artist=True, add_metadata=True):
+    """Descarga audio con metadatos automáticos."""
+    music_dir = get_default_music_dir()
+    
+    # Obtener información del video
+    ydl_info_opts = {
+        'quiet': True,
+        'no_warnings': True,
+    }
+    
+    try:
+        with YoutubeDL(ydl_info_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            
+            if 'entries' in info:
+                print(f"🎵 Playlist detectada: {info.get('title', 'Sin título')}")
+                print(f"📊 Número de canciones: {len(info['entries'])}")
+                
+                confirm = input("¿Continuar con la descarga de toda la playlist? (s/n): ").lower().strip()
+                if confirm not in ['s', 'si', 'sí', 'y', 'yes']:
+                    print("Descarga cancelada.")
+                    return
+                
+                download_playlist_with_metadata(url, organize_by_artist, add_metadata)
+                return
+            else:
+                video_title = info.get('title', 'Título Desconocido')
+                uploader = info.get('uploader', 'Canal Desconocido')
+                upload_date = info.get('upload_date', '')
+    except Exception as e:
+        print(f"Error al obtener información del video: {e}")
+        return
+    
+    # Extraer artista y título
+    if organize_by_artist:
+        artist, song_title = extract_artist_from_title(video_title)
+        if artist == "Artista Desconocido":
+            artist = sanitize_filename(uploader)
+        
+        artist_dir = os.path.join(music_dir, artist)
+        output_template = os.path.join(artist_dir, f"{song_title}.mp3")
+    else:
+        artist_dir = music_dir
+        artist, song_title = extract_artist_from_title(video_title)
+        output_template = os.path.join(music_dir, f"{sanitize_filename(video_title)}.mp3")
+    
+    # Crear directorio
+    output_dir = os.path.dirname(output_template)
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except Exception as e:
+        print(f"Error creando directorio: {e}")
+        return
+    
+    # Configuración de descarga con metadatos básicos de yt-dlp
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': output_template,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'quiet': True,
+        'no_warnings': True,
+        'writeinfojson': False,  # No necesitamos el JSON
+        'writethumbnail': False,  # Obtendremos artwork de MusicBrainz
+    }
+    
+    print(f"🎵 Descargando: {song_title}")
+    print(f"🎤 Artista: {artist}")
+    
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        
+        # Añadir metadatos avanzados si está habilitado
+        if add_metadata and METADATA_AVAILABLE:
+            print("🔍 Buscando metadatos...")
+            
+            # Buscar en MusicBrainz
+            metadata = search_musicbrainz(artist, song_title)
+            
+            if metadata:
+                print(f"✅ Metadatos encontrados: {metadata.get('album', 'Sin álbum')} ({metadata.get('year', 'Sin año')})")
+                
+                # Aplicar metadatos
+                if add_metadata_to_mp3(output_template, metadata):
+                    print("🎯 Metadatos aplicados correctamente")
+                else:
+                    print("⚠️  Error aplicando algunos metadatos")
+            else:
+                # Metadatos básicos de fallback
+                basic_metadata = {
+                    'title': song_title,
+                    'artist': artist,
+                    'year': upload_date[:4] if len(upload_date) >= 4 else ''
+                }
+                add_metadata_to_mp3(output_template, basic_metadata)
+                print("📝 Aplicados metadatos básicos")
+            
+            # Pausa para evitar saturar la API
+            time.sleep(1)
+        
+        print("✅ ¡Descarga completada!")
+        
+    except Exception as e:
+        print(f"❌ Error en la descarga: {e}")
+
+def download_playlist_with_metadata(url, organize_by_artist=True, add_metadata=True):
+    """Descarga playlist con metadatos."""
+    print("🚀 Iniciando descarga de playlist con metadatos...")
+    
+    # Para playlists, descargamos una por una para aplicar metadatos individuales
+    ydl_info_opts = {'quiet': True, 'no_warnings': True}
+    
+    try:
+        with YoutubeDL(ydl_info_opts) as ydl:
+            playlist_info = ydl.extract_info(url, download=False)
+            
+            for i, entry in enumerate(playlist_info['entries'], 1):
+                if entry:  # Verificar que la entrada no sea None
+                    video_url = entry['webpage_url']
+                    print(f"\n📹 [{i}/{len(playlist_info['entries'])}] Procesando: {entry.get('title', 'Sin título')}")
+                    download_with_metadata(video_url, organize_by_artist, add_metadata)
+                    
+                    # Pausa entre descargas para ser amigable con las APIs
+                    if i < len(playlist_info['entries']):
+                        time.sleep(2)
+    
+    except Exception as e:
+        print(f"❌ Error procesando playlist: {e}")
+
+def reorganize_existing_music():
+    """Reorganiza canciones ya descargadas en carpetas por artista."""
+    music_dir = get_default_music_dir()
+    
+    if not os.path.exists(music_dir):
+        print(f"❌ No se encontró el directorio de música: {music_dir}")
+        return
+    
+    mp3_files = []
+    for file in os.listdir(music_dir):
+        if file.lower().endswith('.mp3') and os.path.isfile(os.path.join(music_dir, file)):
+            mp3_files.append(file)
+    
+    if not mp3_files:
+        print("📁 No se encontraron archivos MP3 para reorganizar en el directorio raíz.")
+        return
+    
+    print(f"🎵 Encontrados {len(mp3_files)} archivos MP3 para reorganizar:")
+    for i, file in enumerate(mp3_files[:5], 1):
+        print(f"  {i}. {file}")
+    if len(mp3_files) > 5:
+        print(f"  ... y {len(mp3_files) - 5} más")
+    
+    confirm = input("\n¿Proceder con la reorganización? (s/n): ").lower().strip()
+    if confirm not in ['s', 'si', 'sí', 'y', 'yes']:
+        print("Reorganización cancelada.")
+        return
+    
+    moved_count = 0
+    error_count = 0
+    
+    for filename in mp3_files:
+        try:
+            title = filename[:-4]
+            artist, song_title = extract_artist_from_title(title)
+            
+            artist_dir = os.path.join(music_dir, artist)
+            os.makedirs(artist_dir, exist_ok=True)
+            
+            old_path = os.path.join(music_dir, filename)
+            new_filename = f"{song_title}.mp3"
+            new_path = os.path.join(artist_dir, new_filename)
+            
+            if os.path.exists(new_path):
+                print(f"⚠️  Ya existe: {artist}/{new_filename}")
+                continue
+            
+            os.rename(old_path, new_path)
+            print(f"✅ Movido: {filename} → {artist}/{new_filename}")
+            moved_count += 1
+            
+        except Exception as e:
+            print(f"❌ Error con {filename}: {e}")
+            error_count += 1
+    
+    print(f"\n🎉 Reorganización completada:")
+    print(f"   ✅ Archivos movidos: {moved_count}")
+    if error_count > 0:
+        print(f"   ❌ Errores: {error_count}")
+
+def show_menu():
+    """Muestra el menú principal."""
+    print("\n" + "="*60)
+    print("🎵 DESCARGADOR DE YOUTUBE A MP3 CON METADATOS")
+    print("="*60)
+    print("1. Descargar video individual")
+    print("2. Descargar playlist completa")
+    print("3. Reorganizar música existente")
+    print("4. Configurar metadatos automáticos")
+    print("5. Salir")
+    print("="*60)
+    
+    if METADATA_AVAILABLE:
+        print("✅ Metadatos automáticos: DISPONIBLES")
+    else:
+        print("⚠️  Metadatos automáticos: NO DISPONIBLES")
+        print("   Instala con: pip install mutagen musicbrainzngs Pillow")
+
+def main():
+    """Función principal con menú mejorado."""
+    setup_musicbrainz()
+    
+    # Configuración inicial
+    organize_by_artist = True
+    add_metadata = METADATA_AVAILABLE
+    
+    # Preguntar configuraciones iniciales
+    print("🎵 CONFIGURACIÓN INICIAL")
+    print("-" * 30)
+    
+    while True:
+        organize = input("¿Organizar canciones por artista en carpetas? (s/n): ").lower().strip()
+        if organize in ['s', 'si', 'sí', 'y', 'yes']:
+            organize_by_artist = True
+            break
+        elif organize in ['n', 'no']:
+            organize_by_artist = False
+            break
+        else:
+            print("Por favor, responde 's' para sí o 'n' para no.")
+    
+    if METADATA_AVAILABLE:
+        while True:
+            metadata = input("¿Añadir metadatos automáticos (álbum, año, artwork)? (s/n): ").lower().strip()
+            if metadata in ['s', 'si', 'sí', 'y', 'yes']:
+                add_metadata = True
+                break
+            elif metadata in ['n', 'no']:
+                add_metadata = False
+                break
+            else:
+                print("Por favor, responde 's' para sí o 'n' para no.")
+    
+    # Bucle principal
+    while True:
+        show_menu()
+        choice = input("Selecciona una opción (1-5): ").strip()
+        
+        if choice == '1':
+            url = input("\n📹 Ingresa la URL del video de YouTube: ").strip()
+            if url and ('youtube.com' in url or 'youtu.be' in url):
+                print("🚀 Iniciando descarga...")
+                download_with_metadata(url, organize_by_artist, add_metadata)
+            else:
+                print("❌ URL no válida.")
+        
+        elif choice == '2':
+            url = input("\n📋 Ingresa la URL de la playlist de YouTube: ").strip()
+            if url and 'youtube.com' in url and ('playlist' in url or 'list=' in url):
+                print("🚀 Analizando playlist...")
+                download_with_metadata(url, organize_by_artist, add_metadata)
+            else:
+                print("❌ URL de playlist no válida.")
+        
+        elif choice == '3':
+            print("\n📁 Reorganizando música existente...")
+            reorganize_existing_music()
+        
+        elif choice == '4':
+            print(f"\n⚙️  CONFIGURACIÓN ACTUAL:")
+            print(f"   📁 Organizar por artista: {'✅ Sí' if organize_by_artist else '❌ No'}")
+            print(f"   🎯 Metadatos automáticos: {'✅ Sí' if add_metadata else '❌ No'}")
+            print(f"   🔧 Librerías instaladas: {'✅ Sí' if METADATA_AVAILABLE else '❌ No'}")
+            
+            if not METADATA_AVAILABLE:
+                print("\n💡 Para habilitar metadatos automáticos:")
+                print("   pip install mutagen musicbrainzngs Pillow")
+        
+        elif choice == '5':
+            print("\n👋 ¡Hasta luego!")
+            break
+        
+        else:
+            print("❌ Opción no válida. Por favor, selecciona 1-5.")
+        
+        input("\nPresiona Enter para continuar...")
+
+if __name__ == "__main__":
+    main()

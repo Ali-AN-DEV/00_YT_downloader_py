@@ -1,0 +1,155 @@
+import os
+import re
+from yt_dlp import YoutubeDL
+
+def get_default_music_dir():
+    """Devuelve la ruta del directorio de Música predeterminado del sistema."""
+    home_dir = os.path.expanduser("~")
+    return os.path.join(home_dir, "Music")
+
+def sanitize_filename(filename):
+    """Limpia el nombre del archivo eliminando caracteres no válidos."""
+    # Elimina caracteres que no son válidos en nombres de archivo
+    filename = re.sub(r'[<>:"/\\|?*]', '', filename)
+    # Elimina espacios al inicio y final
+    filename = filename.strip()
+    # Reemplaza múltiples espacios con uno solo
+    filename = re.sub(r'\s+', ' ', filename)
+    return filename
+
+def extract_artist_from_title(title):
+    """Extrae el nombre del artista del título del video."""
+    # Patrones comunes para separar artista y título
+    patterns = [
+        r'^([^-]+)\s*-\s*(.+)$',  # "Artista - Canción"
+        r'^([^–]+)\s*–\s*(.+)$',  # "Artista – Canción" (guión largo)
+        r'^([^|]+)\s*\|\s*(.+)$', # "Artista | Canción"
+        r'^([^•]+)\s*•\s*(.+)$',  # "Artista • Canción"
+    ]
+    
+    for pattern in patterns:
+        match = re.match(pattern, title)
+        if match:
+            artist = match.group(1).strip()
+            song = match.group(2).strip()
+            return sanitize_filename(artist), sanitize_filename(song)
+    
+    # Si no encuentra un patrón, devuelve "Artista Desconocido"
+    return "Artista Desconocido", sanitize_filename(title)
+
+def download_mp3(url, organize_by_artist=True):
+    """
+    Descarga audio de un video de YouTube como MP3.
+    Si organize_by_artist es True, organiza las canciones en carpetas por artista.
+    """
+    music_dir = get_default_music_dir()
+    
+    # Primero, obtenemos la información del video sin descargarlo
+    ydl_info_opts = {
+        'quiet': True,
+        'no_warnings': True,
+    }
+    
+    try:
+        with YoutubeDL(ydl_info_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            video_title = info.get('title', 'Título Desconocido')
+            uploader = info.get('uploader', 'Canal Desconocido')
+    except Exception as e:
+        print(f"Error al obtener información del video: {e}")
+        return
+    
+    if organize_by_artist:
+        # Intentamos extraer el artista del título
+        artist, song_title = extract_artist_from_title(video_title)
+        
+        # Si no pudimos extraer el artista del título, usamos el nombre del canal
+        if artist == "Artista Desconocido":
+            artist = sanitize_filename(uploader)
+        
+        # Crear carpeta del artista
+        artist_dir = os.path.join(music_dir, artist)
+        output_template = os.path.join(artist_dir, f"{song_title}.mp3")
+    else:
+        # Descarga directamente en la carpeta de música
+        output_template = os.path.join(music_dir, f"{sanitize_filename(video_title)}.mp3")
+    
+    # Crear el directorio si no existe
+    output_dir = os.path.dirname(output_template)
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+    except PermissionError:
+        print(f"Error: Sin permisos para crear/escribir en '{output_dir}'.")
+        return
+    except Exception as e:
+        print(f"Error inesperado: {e}")
+        return
+    
+    # Configuración de yt-dlp
+    ydl_opts = {
+        'format': 'bestaudio/best',
+        'outtmpl': output_template,
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': '192',
+        }],
+        'quiet': True,
+        'no_warnings': True,
+    }
+    
+    # Mostrar información de la descarga
+    if organize_by_artist:
+        print(f"Descargando: {song_title}")
+        print(f"Artista detectado: {artist}")
+        print(f"Guardando en: {artist_dir}")
+    else:
+        print(f"Descargando: {video_title}")
+        print(f"Guardando en: {music_dir}")
+    
+    try:
+        with YoutubeDL(ydl_opts) as ydl:
+            ydl.download([url])
+        print("¡Descarga completada exitosamente!")
+    except Exception as e:
+        print(f"Error en la descarga: {e}")
+
+def download_multiple_songs():
+    """Permite descargar múltiples canciones en una sesión."""
+    print("=== Descargador de YouTube a MP3 ===")
+    print("Escribe 'salir' para terminar el programa")
+    print()
+    
+    # Preguntar si quiere organizar por artista
+    while True:
+        organize = input("¿Organizar canciones por artista en carpetas? (s/n): ").lower().strip()
+        if organize in ['s', 'si', 'sí', 'y', 'yes']:
+            organize_by_artist = True
+            break
+        elif organize in ['n', 'no']:
+            organize_by_artist = False
+            break
+        else:
+            print("Por favor, responde 's' para sí o 'n' para no.")
+    
+    while True:
+        url = input("\nIngresa la URL de YouTube (o 'salir' para terminar): ").strip()
+        
+        if url.lower() in ['salir', 'exit', 'quit', 'q']:
+            print("¡Hasta luego!")
+            break
+        
+        if not url:
+            print("Por favor, ingresa una URL válida.")
+            continue
+        
+        if 'youtube.com' not in url and 'youtu.be' not in url:
+            print("Por favor, ingresa una URL válida de YouTube.")
+            continue
+        
+        print("Iniciando descarga...")
+        download_mp3(url, organize_by_artist)
+        print("-" * 50)
+
+if __name__ == "__main__":
+    download_multiple_songs()

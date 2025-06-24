@@ -4,7 +4,7 @@
 
 ## Características
 - **Video con audio**: Usando yt_to_mp4 descarga en MP4 con códec H.264 (compatible con todos los reproductores).
-- **Audio en MP3**: Usando yt_to_mp3 extrae el audio en alta calidad (192 kbps por defecto).
+- **Audio en MP3**: Usando yt_to_mp3V4 extrae el audio (192 kbps por defecto) ya sea playlists o individual, y crea carpetas en agrupando la música de un mismo autor, así como organizar la existente. 
 
 ## Requisitos
 - Python 3.7 o superior
@@ -30,7 +30,6 @@
    ```bash
    choco install ffmpeg
    ```
-
     O simplemente ve a : https://ffmpeg.org/ 
    
 
@@ -41,5 +40,3 @@ Prueba a dentro de la terminal de tu IDE
  ```bash 
    pip install python-ffmpeg
  ```
-Si el IDE no reproduce sonido en los .mp4, usa VLC Media Player https://www.videolan.org/vlc/index.es.html 
- 
