@@ -9,7 +9,8 @@ def get_default_music_dir():
 
 def sanitize_filename(filename):
     """Limpia el nombre del archivo eliminando caracteres no válidos."""
-    # Elimina caracteres que no son válidos en nombres de archivo
+    # Elimina caracteres que no son válidos en nombres dS
+    # e archivo
     filename = re.sub(r'[<>:"/\\|?*]', '', filename)
     # Elimina espacios al inicio y final
     filename = filename.strip()

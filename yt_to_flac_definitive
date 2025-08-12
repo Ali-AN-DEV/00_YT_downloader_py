@@ -1,0 +1,293 @@
+def check_current_credentials():
+    """Check what Spotify credentials are currently configured"""
+    config_dir = Path.home() / '.spotdl'
+    config_file = config_dir / 'config.json'
+    
+    print(f"\n🔍 Checking credentials at: {config_file}")
+    
+    if not config_file.exists():
+        print("❌ No config file found - using spotdl defaults (shared credentials)")
+        return False
+    
+    try:
+        with open(config_file, 'r') as f:
+            config = json.load(f)
+        
+        client_id = config.get('client_id', 'Not set')
+        if client_id == 'Not set':
+            print("❌ No client_id in config - using spotdl defaults")
+            return False
+        
+        print(f"📋 Current Client ID: {client_id}")
+        
+        # Check if it's a default/shared ID
+        default_ids = [
+            'f8a606e5583643beaa27ce62c48e3fc1',
+            '5f573c9620494bae87890c0f08a60293'
+        ]
+        
+        if client_id in default_ids:
+            print("⚠️ This is a SHARED credential (causes rate limiting)")
+            return False
+        else:
+            print("✅ This appears to be a custom credential")
+            return True
+            
+    except (json.JSONDecodeError, KeyError) as e:
+        print(f"❌ Error reading config: {e}")
+        return False
+
+
+"""
+Simple SpotDL FLAC Downloader with Rate Limit Management
+Downloads music from Spotify URLs in FLAC format with full metadata
+"""
+
+import subprocess
+import sys
+import os
+import time
+import json
+from pathlib import Path
+
+
+def check_spotdl():
+    """Check if spotdl is installed"""
+    try:
+        result = subprocess.run(['spotdl', '--version'], 
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            print(f"✅ spotdl found: {result.stdout.strip()}")
+            return True
+    except (FileNotFoundError, subprocess.SubprocessError, subprocess.TimeoutExpired):
+        pass
+    
+    print("❌ spotdl not found!")
+    print("Install with: pip install spotdl")
+    return False
+
+
+def setup_spotify_credentials():
+    """Setup custom Spotify credentials to avoid rate limiting"""
+    config_dir = Path.home() / '.spotdl'
+    config_file = config_dir / 'config.json'
+    
+    print("\n🔧 Setting up Spotify credentials to avoid rate limiting...")
+    print("\n📋 To get your own Spotify credentials:")
+    print("1. Go to: https://developer.spotify.com/dashboard")
+    print("2. Log in with your Spotify account")
+    print("3. Click 'Create App'")
+    print("4. Fill in any app name (e.g., 'My Music Downloader')")
+    print("5. Add redirect URI: http://localhost:8080/callback")
+    print("6. Copy your Client ID and Client Secret")
+    
+    print(f"\n📁 Config will be saved to: {config_file}")
+    
+    # Check if config already exists
+    if config_file.exists():
+        print("\n✅ Found existing config file")
+        try:
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+            
+            current_client_id = config.get('client_id', '')
+            print(f"Current Client ID: {current_client_id[:20]}...")
+            
+            # Check if it's the default shared credentials or empty
+            default_ids = [
+                'f8a606e5583643beaa27ce62c48e3fc1',  # Common default 1
+                '5f573c9620494bae87890c0f08a60293',  # Common default 2
+                ''  # Empty
+            ]
+            
+            if current_client_id in default_ids:
+                print("⚠️ Using default shared credentials (causes rate limiting)")
+            else:
+                print("✅ Found custom credentials!")
+                use_existing = input("Use existing credentials? (y/n): ").lower().strip()
+                if use_existing in ['y', 'yes', 's', 'si']:
+                    return True
+                
+        except (json.JSONDecodeError, KeyError):
+            print("⚠️ Config file corrupted, will recreate")
+    
+    # Ask user if they want to set up credentials
+    setup = input("\nSet up your own Spotify credentials now? (y/n): ").lower().strip()
+    if setup not in ['y', 'yes', 's', 'si', 'sí']:
+        print("⚠️ Continuing with shared credentials (may hit rate limits)")
+        return False
+    
+    # Get credentials from user
+    print("\nEnter your Spotify Developer credentials:")
+    client_id = input("Client ID: ").strip()
+    client_secret = input("Client Secret: ").strip()
+    
+    if not client_id or not client_secret:
+        print("❌ Invalid credentials. Continuing with defaults.")
+        return False
+    
+    # Create config directory if it doesn't exist
+    config_dir.mkdir(exist_ok=True)
+    
+    # Load existing config or create new
+    config = {}
+    if config_file.exists():
+        try:
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError):
+            config = {}
+    
+    # Update with new credentials
+    config.update({
+        'client_id': client_id,
+        'client_secret': client_secret,
+        'load_config': True,
+        'threads': 1,
+        'max_retries': 10
+    })
+    
+    # Save config
+    try:
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=2)
+        print("✅ Credentials saved successfully!")
+        return True
+    except Exception as e:
+        print(f"❌ Error saving config: {e}")
+        return False
+
+
+def download_music(url, output_dir=None, attempt=1):
+    """Download music using spotdl with FLAC format"""
+    
+    # Set default output directory to current directory
+    if output_dir is None:
+        output_dir = Path.cwd()
+    else:
+        output_dir = Path(output_dir)
+    
+    # Ensure output directory exists
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Build spotdl command
+    cmd = [
+        'spotdl', 'download', url,
+        '--format', 'flac',
+        '--bitrate', 'disable',
+        '--output', str(output_dir / '{artists} - {title}.{output-ext}'),
+        '--audio', 'youtube-music', 'youtube', 'soundcloud',
+        '--lyrics', 'genius', 'azlyrics', 'musixmatch',
+        '--generate-lrc',
+        '--overwrite', 'skip',
+        '--max-retries', '10',
+        '--threads', '1',
+        '--config'
+    ]
+    
+    if attempt == 1:
+        print(f"🎵 Downloading to: {output_dir}")
+        print(f"📀 Format: FLAC (lossless)")
+        print(f"🎯 URL: {url}")
+    
+    print(f"🚀 Starting download (attempt {attempt})...")
+    
+    try:
+        result = subprocess.run(cmd, timeout=600)
+        
+        # Check for downloaded files
+        flac_files = list(output_dir.glob('*.flac'))
+        lrc_files = list(output_dir.glob('*.lrc'))
+        
+        if flac_files:
+            print(f"\n🎉 Download successful!")
+            print(f"📁 Downloaded: {len(flac_files)} FLAC file(s)")
+            if lrc_files:
+                print(f"📝 Lyrics: {len(lrc_files)} LRC file(s)")
+            
+            for file in flac_files[-2:]:  # Show last 2 files
+                print(f"   ✅ {file.name}")
+            return True
+        else:
+            print(f"❌ No files downloaded")
+            return False
+            
+    except subprocess.TimeoutExpired:
+        print("❌ Download timed out")
+        return False
+    except KeyboardInterrupt:
+        print("\n⏹️ Cancelled by user")
+        return False
+    except Exception as e:
+        print(f"❌ Error: {e}")
+        return False
+
+
+def download_with_retries(url, output_dir=None):
+    """Download with smart retry logic for rate limiting"""
+    max_attempts = 3
+    
+    for attempt in range(1, max_attempts + 1):
+        if attempt > 1:
+            print(f"\n🔄 Retry {attempt}/{max_attempts}")
+        
+        success = download_music(url, output_dir, attempt)
+        if success:
+            return True
+        
+        if attempt < max_attempts:
+            wait_time = 90  # Wait 90 seconds between retries
+            print(f"⏳ Waiting {wait_time} seconds for rate limit reset...")
+            time.sleep(wait_time)
+    
+    print(f"\n❌ Failed after {max_attempts} attempts")
+    print("💡 Try using a search query: 'Artist - Song Title'")
+    return False
+
+
+def main():
+    """Main function"""
+    print("=" * 60)
+    print("🎵 SpotDL FLAC Downloader - Rate Limit Optimized")
+    print("=" * 60)
+    
+    if not check_spotdl():
+        sys.exit(1)
+    
+    # First, check what credentials are currently being used
+    check_current_credentials()
+    
+    setup_spotify_credentials()
+    
+    print("\nSupported formats:")
+    print("🎵 Track: https://open.spotify.com/track/...")
+    print("💿 Album: https://open.spotify.com/album/...")
+    print("📝 Playlist: https://open.spotify.com/playlist/...")
+    print("🔍 Search: 'Artist - Song Title' (recommended)")
+    
+    while True:
+        print("\n" + "-" * 60)
+        
+        url = input("Enter URL or search query ('quit' to exit): ").strip()
+        
+        if url.lower() in ['quit', 'q', 'exit']:
+            print("👋 Goodbye!")
+            break
+        
+        if not url:
+            print("❌ Please enter a valid input")
+            continue
+        
+        output = input("Output directory (Enter = current): ").strip()
+        output_dir = output if output else None
+        
+        success = download_with_retries(url, output_dir)
+        
+        if success:
+            continue_choice = input("\nDownload another? (y/n): ").strip().lower()
+            if continue_choice not in ['y', 'yes', 's', 'si']:
+                break
+
+
+if __name__ == "__main__":
+    main()
