@@ -140,13 +140,3 @@ If you continue having issues:
 
 1. Check the [official spotdl documentation](https://spotdl.rtfd.io/)
 2. Visit the [spotdl GitHub repository](https://github.com/spotDL/spotify-downloader)
-3. Try running spotdl commands directly to isolate the issue
-
-### Legal Notice
-
-This tool is for personal use only. Ensure you comply with:
-- Spotify's Terms of Service
-- Local copyright laws
-- YouTube's Terms of Service
-
-Download only music you have the right to access.
